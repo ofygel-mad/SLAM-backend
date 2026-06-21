@@ -6,11 +6,37 @@ from sqlalchemy import (create_engine, Integer, String, Text, DateTime, ForeignK
 from sqlalchemy.orm import (DeclarativeBase, Mapped, mapped_column, relationship,
                             sessionmaker)
 
+def _clean_db_url(raw: str) -> str:
+    """Подстраховка от частой ошибки в панели Railway: в значение переменной
+    случайно попадает сам ключ ('DATABASE_URL=') и/или кавычки."""
+    if not raw:
+        return ""
+    raw = raw.strip()
+    # убрать случайный префикс 'DATABASE_URL=' (в т.ч. в кавычках)
+    for prefix in ("DATABASE_URL=", "database_url="):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):].strip()
+    # убрать обрамляющие кавычки
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1].strip()
+    return raw
+
+
 # Railway даёт DATABASE_URL для Postgres; локально — SQLite-файл.
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./slam.db")
+DATABASE_URL = _clean_db_url(os.environ.get("DATABASE_URL", "")) or "sqlite:///./slam.db"
 # SQLAlchemy требует postgresql:// (а не postgres://)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Понятная ошибка, если ссылка на Postgres не раскрылась (пустые логин/хост).
+if DATABASE_URL.startswith("postgresql://") and "@" in DATABASE_URL:
+    creds = DATABASE_URL.split("://", 1)[1].split("@", 1)[0]
+    if creds in ("", ":"):
+        raise RuntimeError(
+            "DATABASE_URL указывает на пустые логин/пароль — похоже, переменная "
+            "на Railway задана неверно. В сервисе бэкенда задайте "
+            "DATABASE_URL = ${{Postgres.DATABASE_URL}} (без кавычек и префикса)."
+        )
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
