@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Локальная БД (на Railway используется Postgres)
+*.db
+
+# Скриншоты отладки
+screenshots/
