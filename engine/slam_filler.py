@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import time
 
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 from . import answers as A
 
@@ -114,7 +114,11 @@ class SlamFiller:
             try:
                 self._open(page, res)
                 self._page1(page, data, res)
+                if not res.ok:
+                    return res
                 self._advance(page, res)  # -> readiness/hazard pages
+                if not res.ok:
+                    return res
                 # Страницы 2..N: да/нет + (последняя) тексты опасностей
                 while True:
                     sec = _section(page)
@@ -127,6 +131,8 @@ class SlamFiller:
                         self._hazard_page(page, res)
                     else:
                         self._yesno_page(page, sec, res)
+                    if not res.ok:
+                        break
 
                     if screenshot_prefix:
                         page.screenshot(path=f"{screenshot_prefix}_sec_{_norm(sec)[:12]}.png",
@@ -138,9 +144,12 @@ class SlamFiller:
                         res.fail(f"Нет кнопки Next и нет Submit на разделе '{sec}'")
                         break
                     self._advance(page, res)
+                    if not res.ok:
+                        break
 
                 # Диагностика финальной страницы перед отправкой
-                self._verify_before_submit(page, res)
+                if res.ok:
+                    self._verify_before_submit(page, res)
 
                 if res.ok and submit:
                     page.click(SEL_SUBMIT)
@@ -173,10 +182,20 @@ class SlamFiller:
 
     def _open(self, page, res):
         page.goto(FORM_URL, wait_until="domcontentloaded", timeout=60000)
-        page.get_by_role("button", name="Start now").last.click(timeout=30000)
+        if not page.query_selector(SEL_TEXT):
+            clicked = False
+            for name in ("Start now", "Начать сейчас", "Начать", "Бастау"):
+                try:
+                    page.get_by_role("button", name=name).last.click(timeout=5000)
+                    clicked = True
+                    break
+                except PlaywrightTimeoutError:
+                    pass
+            if not clicked:
+                page.locator("button").last.click(timeout=10000)
         page.wait_for_selector(SEL_TEXT, timeout=40000)
         _wait_render(page)
-        res.log("Форма открыта, нажата кнопка «Start now».")
+        res.log("Форма открыта, стартовый экран пройден.")
 
     def _page1(self, page, data: WorkerData, res):
         # 3 текстовых поля: ФИО, рабочее место, описание задания
@@ -234,6 +253,16 @@ class SlamFiller:
         other_radio = q6.query_selector('[role=radio][aria-label="Other answer"]')
         if other_radio:
             other_radio.click()
+        else:
+            picked = _click_choice(q6, "Другое") or _click_choice(q6, "Other")
+            if not picked:
+                choices = q6.query_selector_all(SEL_CHOICE)
+                if choices:
+                    choices[-1].click()
+                else:
+                    res.fail("Стр.1: не найден вариант «Другое» в Q6")
+                    return
+        _wait_render(page)
         ti = q6.query_selector(SEL_TEXT)
         if not ti:
             res.fail("Стр.1: не найдено поле «Другое» в Q6")
