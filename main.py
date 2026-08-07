@@ -2,25 +2,37 @@
 """FastAPI: управление блоками/работниками + запуск автозаполнения SLAM.
 API-only сервис (фронтенд деплоится отдельным проектом)."""
 import os
+from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from db import init_db, get_session, Block, Worker
+from engine import answers as A
 from jobs import JobManager
 
 # headless из окружения (на сервере — да). HEADLESS=0 для отладки с окном.
 HEADLESS = os.environ.get("HEADLESS", "1") != "0"
 # Разрешённые источники для фронтенда (через запятую). По умолчанию — любой.
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()] or ["*"]
+# Сколько бригад можно заполнять одновременно (каждая держит свой chromium).
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "1"))
 
 TaskKey = Literal["montazh", "demontazh"]
 ObjectKey = Literal["sulphide_1", "sulphide_2"]
 
-app = FastAPI(title="SLAM Auto-Fill API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="SLAM Auto-Fill API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -28,12 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-jobs = JobManager(headless=HEADLESS)
-
-
-@app.on_event("startup")
-def _startup():
-    init_db()
+jobs = JobManager(headless=HEADLESS, max_concurrent=MAX_CONCURRENT_JOBS)
 
 
 def db() -> Session:
@@ -72,6 +79,15 @@ class SubmitIn(BaseModel):
     company: Optional[str] = Field(default=None, max_length=300)
 
 
+class PreviewIn(BaseModel):
+    """Что именно движок напишет в форму — для плашки предпросмотра."""
+    full_name: str = Field(default="", max_length=300)
+    workplace: str = Field(default="", max_length=1000)
+    company: str = Field(default="", max_length=300)
+    task: TaskKey = "montazh"
+    object_key: ObjectKey = "sulphide_1"
+
+
 # ---------- служебное ----------
 @app.get("/")
 def root():
@@ -81,6 +97,24 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------- что программа пишет в форму ----------
+@app.get("/api/answers")
+def answers_template():
+    """Шаблон сценария с плейсхолдерами ({{full_name}} и т.п.).
+
+    Фронтенд забирает его один раз и подставляет значения сам — плашка
+    обновляется мгновенно, без запроса на каждый набранный символ. Тексты
+    берутся из engine/answers.py, то есть ровно те, что уйдут в форму."""
+    return A.plan_template()
+
+
+@app.post("/api/preview")
+def preview(data: PreviewIn):
+    """Полностью раскрытый сценарий — той же функцией, что и реальный прогон."""
+    return {"pages": A.resolve_plan(data.full_name, data.workplace, data.task,
+                                    data.object_key, data.company)}
 
 
 # ---------- блоки ----------
@@ -132,8 +166,11 @@ def add_worker(block_id: int, data: WorkerIn, s: Session = Depends(db)):
     b = s.get(Block, block_id)
     if not b:
         raise HTTPException(404, "Блок не найден")
-    idx = len(b.workers)
-    w = Worker(block_id=block_id, full_name=data.full_name.strip(), order_index=idx)
+    # max+1, а не len(): после удаления работника len() повторяет уже занятый
+    # order_index, и порядок в списке начинает «прыгать».
+    top = s.query(func.max(Worker.order_index)).filter(Worker.block_id == block_id).scalar()
+    w = Worker(block_id=block_id, full_name=data.full_name.strip(),
+               order_index=(top + 1) if top is not None else 0)
     s.add(w); s.commit(); s.refresh(b)
     return b.to_dict()
 
@@ -196,7 +233,23 @@ def submit_block(block_id: int, data: SubmitIn, s: Session = Depends(db)):
 
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
+    """Лёгкий ответ для опроса прогресса: без протокола полей (см. ниже)."""
     job = jobs.get(job_id)
     if not job:
         raise HTTPException(404, "Задача не найдена")
-    return job.to_dict()
+    return job.to_dict(with_fields=False)
+
+
+@app.get("/api/jobs/{job_id}/fields/{index}")
+def job_fields(job_id: str, index: int):
+    """Протокол одного работника: что реально оказалось в каждом поле формы.
+
+    Запрашивается только когда пользователь раскрыл плашку — иначе опрос
+    прогресса возил бы по мобильной сети десятки килобайт каждые 1.5 с."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Задача не найдена")
+    fields = job.fields_of(index)
+    if fields is None:
+        raise HTTPException(404, "Работник не найден в задаче")
+    return {"fields": fields}

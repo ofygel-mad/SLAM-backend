@@ -82,3 +82,167 @@ NO = "Нет"
 
 # Раздел, где на вопрос(ы) нужно отвечать "Нет" (выявление опасностей).
 HAZARD_SECTION_MARKERS = ["выявление опасностей", "hazards iden", "қауіп-қатерлерді анықтау"]
+
+
+# ---------------------------------------------------------------------------
+# Разметка формы: разделы, вопросы и маркеры для поиска в DOM.
+#
+# Это единственный источник правды. Движок ищет поля по MARKERS отсюда, а
+# «плашка предпросмотра» во фронтенде строится функцией build_plan() отсюда же —
+# поэтому показанное пользователю и реально записанное разойтись не могут.
+# ---------------------------------------------------------------------------
+
+SECTIONS = {
+    "personal":  "Внесение персональных данных",
+    "readiness": "Оценка готовности к выполнению производственного задания",
+    "hazard_id": "Выявление опасностей",
+    "impact":    "Оценка степени влияния опасностей",
+    "control":   "Управление опасностями",
+}
+
+# Полные (русские) формулировки вопросов — как в самой форме.
+Q_PERSONAL = {
+    "fio":       "1. Ф.И.О.",
+    "workplace": "2. Наименование рабочего места",
+    "task":      "3. Описание задания",
+    "dept":      "4. Департамент или организация (объект)",
+    "object":    "5. Подрядная организация — объект производства работ",
+    "company":   "6. Наименование подрядной организации",
+}
+
+# Маркеры для поиска вопроса в DOM (нормализованные подстроки заголовка).
+MARKERS_PERSONAL = {
+    "fio":       "ф.и.о",
+    "workplace": "наименование рабочего места",
+    "task":      "описание задания",
+    "dept":      "департамент",
+    "object":    "объект производство работ",
+    "company":   "наименование подрядной",
+}
+
+Q_READINESS = [
+    "7. Выполнял ли я такое задание раньше?",
+    "8. Понимаю ли я существующий регламент работы / правила выполнения задания?",
+    "9. Есть ли у меня соответствующая квалификация / право / разрешение на выполнение "
+    "данного задания / наряд / наряд-допуск?",
+    "10. Знаю ли я все правила личного поведения при возникновении чрезвычайных и "
+    "нештатных ситуаций?",
+]
+
+Q_HAZARD_ID = [
+    "11. Может на меня что-то упасть? Могу ли я уронить что-либо на других? "
+    "Могу ли я упасть с высоты? Могу ли я быть зажат или прижат чем-либо?",
+]
+
+Q_IMPACT = [
+    "12. Соответствуют ли мои СИЗ данному заданию и находятся ли они в исправном и "
+    "пригодном для использования состоянии?",
+    "13. Полностью ли я отключил / изолировал (или убедился в отключении/изоляции) всех "
+    "видов энергии и проверил надёжность их блокировки от несанкционированного включения?",
+    "14. Соответствует ли моё оборудование / инструмент данному заданию и находится ли "
+    "оно в исправном состоянии?",
+    "15. Знаю ли я о присутствии других людей (оборудования) на моём участке работы и "
+    "знают ли они о моём присутствии на данном рабочем месте?",
+]
+
+# Финальная страница: (ключ в HAZARDS, формулировка вопроса, маркер для поиска в DOM)
+CONTROL_FIELDS = [
+    ("hazard_1",  "16. Опасность 1 на рабочем месте",            "опасность 1"),
+    ("control_1", "17. Меры контроля для опасности 1",           "меры контроля для опасности 1"),
+    ("hazard_2",  "18. Опасность 2 на рабочем месте",            "опасность 2"),
+    ("control_2", "19. Меры контроля для опасности 2",           "меры контроля для опасности 2"),
+    ("hazard_3",  "20. Опасность 3 на рабочем месте",            "опасность 3"),
+    ("control_3", "21. Меры контроля для опасности 3",           "меры контроля для опасности 3"),
+    ("hazard_4",  "22. Опасность 4 на рабочем месте",            "опасность 4"),
+    ("control_4", "23. Меры контроля для опасности 4",           "меры контроля для опасности 4"),
+    ("remarks",   "24. Замечания/комментарии",                   "замечания"),
+]
+
+# Сколько ответов «Да»/«Нет» ожидается за один проход (по разметке формы).
+EXPECTED_YES = len(Q_READINESS) + len(Q_IMPACT)   # 8
+EXPECTED_NO = len(Q_HAZARD_ID)                    # 1
+
+# Плейсхолдеры для «шаблонного» предпросмотра (GET /api/answers).
+PH_FULL_NAME = "{{full_name}}"
+PH_WORKPLACE = "{{workplace}}"
+PH_COMPANY = "{{company}}"
+PH_TASK = "{{task}}"
+PH_OBJECT = "{{object}}"
+
+
+def _item(key, question, kind, value, source, note=""):
+    return {"key": key, "q": question, "kind": kind, "value": value,
+            "source": source, "note": note}
+
+
+def build_plan(full_name: str, workplace: str, task_text: str,
+               object_text: str, company: str) -> list:
+    """Полный сценарий заполнения: что именно будет записано в каждое поле.
+
+    Принимает УЖЕ готовые тексты задания и объекта (см. resolve_plan) —
+    так один и тот же код обслуживает и реальный прогон, и шаблон с
+    плейсхолдерами для фронтенда.
+
+    source: worker | session | block | constant — откуда берётся значение.
+    """
+    return [
+        {
+            "section": SECTIONS["personal"],
+            "items": [
+                _item("fio", Q_PERSONAL["fio"], "text", full_name, "worker"),
+                _item("workplace", Q_PERSONAL["workplace"], "text", workplace, "session"),
+                _item("task", Q_PERSONAL["task"], "text", task_text, "block"),
+                _item("dept", Q_PERSONAL["dept"], "choice", DEPARTMENT_CONTRACTOR, "constant",
+                      "всегда «Подрядная организация»"),
+                _item("object", Q_PERSONAL["object"], "choice", object_text, "block"),
+                _item("company", Q_PERSONAL["company"], "choice+other", company, "block",
+                      "выбирается «Другое» и вписывается название"),
+            ],
+        },
+        {
+            "section": SECTIONS["readiness"],
+            "items": [_item("yes", q, "choice", YES, "constant") for q in Q_READINESS],
+        },
+        {
+            "section": SECTIONS["hazard_id"],
+            "items": [_item("no", q, "choice", NO, "constant",
+                            "единственный вопрос, где ответ «Нет»") for q in Q_HAZARD_ID],
+        },
+        {
+            "section": SECTIONS["impact"],
+            "items": [_item("yes", q, "choice", YES, "constant") for q in Q_IMPACT],
+        },
+        {
+            "section": SECTIONS["control"],
+            "items": [_item(key, question, "text", HAZARDS[key], "constant")
+                      for key, question, _marker in CONTROL_FIELDS],
+        },
+    ]
+
+
+def resolve_plan(full_name: str, workplace: str, task: str,
+                 object_key: str, company: str) -> list:
+    """build_plan по ключам (montazh/sulphide_1/...), как их хранит БД."""
+    return build_plan(
+        full_name=full_name,
+        workplace=workplace,
+        task_text=WORK_TASK.get(task, f"<неизвестный тип работ: {task}>"),
+        object_text=OBJECT_OPTIONS.get(object_key, f"<неизвестный объект: {object_key}>"),
+        company=company,
+    )
+
+
+def plan_template() -> dict:
+    """Шаблон сценария с плейсхолдерами — фронтенд подставляет значения сам
+    и показывает их мгновенно, без запроса на каждый символ."""
+    return {
+        "pages": build_plan(PH_FULL_NAME, PH_WORKPLACE, PH_TASK, PH_OBJECT, PH_COMPANY),
+        "task_options": dict(WORK_TASK),
+        "object_options": dict(OBJECT_OPTIONS),
+        "placeholders": {
+            "full_name": PH_FULL_NAME, "workplace": PH_WORKPLACE,
+            "company": PH_COMPANY, "task": PH_TASK, "object": PH_OBJECT,
+        },
+        "expected": {"yes": EXPECTED_YES, "no": EXPECTED_NO,
+                     "text_fields": 3 + len(CONTROL_FIELDS)},
+    }

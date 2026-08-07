@@ -19,10 +19,23 @@ res = SlamFiller(headless=True).fill_one(
 )
 
 print("\n================ РЕЗУЛЬТАТ ================")
-print("OK:", res.ok, "| submitted:", res.submitted)
+print(f"Статус: {res.status} | submitted: {res.submitted} | {res.elapsed} с")
+
+bad = [f for f in res.fields if not f["verified"]]
+print(f"\n--- ПОЛЯ: {len(res.fields) - len(bad)}/{len(res.fields)} сверено ---")
+for f in res.fields:
+    print(f"  [{'V' if f['verified'] else 'x'}] {f['q'][:64]}")
+    print(f"      -> {f['value'][:88]}{'…' if len(f['value']) > 88 else ''}")
+    if f["note"]:
+        print(f"      прим.: {f['note']}")
+
 print("\n--- ШАГИ ---")
 for s in res.steps:
     print("  •", s)
+if res.warnings:
+    print("\n--- ПРЕДУПРЕЖДЕНИЯ ---")
+    for w in res.warnings:
+        print("  !", w)
 if res.errors:
     print("\n--- ОШИБКИ ---")
     for e in res.errors:
